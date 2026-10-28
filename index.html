@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simulador de Cross-play</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>🎮 Simulador de Cross-play</h1>
+  <p>PC, consola y móvil juegan en la misma partida con latencias distintas. Aparece un ítem, los tres intentan agarrarlo y el servidor autoritativo decide quién se lo queda.</p>
+</header>
+
+<main>
+  <!-- Controles -->
+  <section class="panel">
+    <div class="buttons">
+      <button id="btnStart">▶ Iniciar</button>
+      <button id="btnBatch" title="Reinicia las estadísticas y simula 1000 rondas al instante con la configuración actual">⚡ Simular 1000 rondas</button>
+      <button id="btnReset">↺ Reiniciar estadísticas</button>
+    </div>
+
+    <div class="mode">
+      <strong>Modo del servidor:</strong>
+      <label><input type="radio" name="mode" value="fifo" checked> Primero en llegar (FIFO)</label>
+      <label><input type="radio" name="mode" value="comp"> Ventana de equidad (compensa la latencia)</label>
+    </div>
+
+    <div class="grid">
+      <label>💻 Ping PC <output></output>
+        <input type="range" id="ping-pc" min="5" max="300" value="20" data-unit="ms"></label>
+      <label>🎮 Ping Consola <output></output>
+        <input type="range" id="ping-con" min="5" max="300" value="60" data-unit="ms"></label>
+      <label>📱 Ping Móvil <output></output>
+        <input type="range" id="ping-mov" min="5" max="300" value="130" data-unit="ms"></label>
+      <label>📶 Jitter (variación del ping) <output></output>
+        <input type="range" id="jitter" min="0" max="60" value="15" data-unit="ms"></label>
+      <label>⏱️ Ventana de equidad (solo modo compensado) <output></output>
+        <input type="range" id="ventana" min="0" max="300" value="180" data-unit="ms"></label>
+      <label>🐢 Velocidad de la animación <output></output>
+        <input type="range" id="speed" min="0.1" max="2" step="0.05" value="0.3" data-unit="×"></label>
+    </div>
+    <small>Los cambios en los sliders se aplican desde la próxima ronda. El ping es de ida y vuelta (RTT).</small>
+  </section>
+
+  <!-- Escena -->
+  <section class="panel">
+    <h2>Red en vivo</h2>
+    <canvas id="scene" width="900" height="350"></canvas>
+    <small>⚪ el servidor publica el ítem · 🟦🟨🟩 cada jugador envía su acción · 🟡 ganador · 🔴 perdedor / tarde</small>
+  </section>
+
+  <section class="panel">
+    <h2>Línea de tiempo de la ronda</h2>
+    <canvas id="timeline" width="900" height="225"></canvas>
+  </section>
+
+  <!-- Resultados -->
+  <section class="panel">
+    <h2>Resultados acumulados</h2>
+    <p class="hint">La línea punteada marca el reparto justo (33 %): si los tres jugadores son igual de hábiles, cada uno debería ganar un tercio de las rondas.</p>
+    <div id="stats"></div>
+    <h2>Bitácora del servidor</h2>
+    <ul id="log"></ul>
+  </section>
+
+  <details class="panel">
+    <summary>¿Qué estoy viendo?</summary>
+    <ul>
+      <li><b>Latencia:</b> el ítem tarda ½ ping en llegar a cada jugador y su acción tarda otro ½ ping en volver.</li>
+      <li><b>Concurrencia:</b> tres acciones compiten por el mismo ítem en el mismo instante.</li>
+      <li><b>Consistencia:</b> el servidor autoritativo es el único que decide, así todos ven el mismo resultado.</li>
+      <li><b>FIFO:</b> gana el primer paquete que llega. Quien tiene mejor conexión gana aunque reaccione más lento.</li>
+      <li><b>Ventana de equidad:</b> el servidor espera unos ms, descuenta el ping medido de cada jugador y premia a quien realmente apretó primero. Costo: todos esperan el veredicto, y quien supere la ventana llega tarde.</li>
+    </ul>
+  </details>
+</main>
+
+<script src="motor.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

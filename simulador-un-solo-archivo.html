@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simulador de Cross-play</title>
+  <style>
+:root {
+  --bg: #0b1020; --panel: #141b34; --line: #26324f;
+  --txt: #e8ecf8; --mut: #9aa7c7; --acc: #7b61ff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--txt); font: 15px/1.5 system-ui, sans-serif; }
+header, main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+header { padding-bottom: 0; }
+h1 { margin: 0 0 4px; font-size: 1.6rem; }
+h2 { margin: 0 0 10px; font-size: 1.05rem; }
+header p, small, .hint { color: var(--mut); }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+canvas { display: block; width: 100%; height: auto; background: #0e1530; border-radius: 8px; margin-bottom: 6px; }
+
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+button { background: var(--acc); color: #fff; border: 0; border-radius: 8px; padding: 9px 14px; font: inherit; cursor: pointer; }
+button:hover { filter: brightness(1.15); }
+#btnBatch, #btnReset { background: #26324f; }
+
+.mode { margin-bottom: 12px; }
+.mode label { display: inline-block; margin: 4px 14px 4px 0; cursor: pointer; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 10px 24px; margin-bottom: 8px; }
+.grid label { display: block; }
+output { float: right; color: var(--mut); font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--acc); }
+input:disabled { opacity: .35; }
+
+.row { display: grid; grid-template-columns: 100px 1fr 56px; align-items: center; gap: 10px; margin: 6px 0; }
+.row b { text-align: right; }
+.track { position: relative; height: 16px; background: #0e1530; border-radius: 8px; overflow: hidden; }
+.fill { height: 100%; transition: width .3s; }
+.fair { position: absolute; left: 33.33%; top: 0; bottom: 0; border-left: 2px dashed #fffa; }
+.sum { margin: 10px 0 14px; color: var(--mut); }
+
+#log { list-style: none; margin: 0; padding: 0; font-size: 13px; color: var(--mut); }
+#log li { padding: 3px 0; border-bottom: 1px solid var(--line); }
+summary { cursor: pointer; font-weight: 600; }
+details ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎮 Simulador de Cross-play</h1>
+  <p>PC, consola y móvil juegan en la misma partida con latencias distintas. Aparece un ítem, los tres intentan agarrarlo y el servidor autoritativo decide quién se lo queda.</p>
+</header>
+
+<main>
+  <!-- Controles -->
+  <section class="panel">
+    <div class="buttons">
+      <button id="btnStart">▶ Iniciar</button>
+      <button id="btnBatch" title="Reinicia las estadísticas y simula 1000 rondas al instante con la configuración actual">⚡ Simular 1000 rondas</button>
+      <button id="btnReset">↺ Reiniciar estadísticas</button>
+    </div>
+
+    <div class="mode">
+      <strong>Modo del servidor:</strong>
+      <label><input type="radio" name="mode" value="fifo" checked> Primero en llegar (FIFO)</label>
+      <label><input type="radio" name="mode" value="comp"> Ventana de equidad (compensa la latencia)</label>
+    </div>
+
+    <div class="grid">
+      <label>💻 Ping PC <output></output>
+        <input type="range" id="ping-pc" min="5" max="300" value="20" data-unit="ms"></label>
+      <label>🎮 Ping Consola <output></output>
+        <input type="range" id="ping-con" min="5" max="300" value="60" data-unit="ms"></label>
+      <label>📱 Ping Móvil <output></output>
+        <input type="range" id="ping-mov" min="5" max="300" value="130" data-unit="ms"></label>
+      <label>📶 Jitter (variación del ping) <output></output>
+        <input type="range" id="jitter" min="0" max="60" value="15" data-unit="ms"></label>
+      <label>⏱️ Ventana de equidad (solo modo compensado) <output></output>
+        <input type="range" id="ventana" min="0" max="300" value="180" data-unit="ms"></label>
+      <label>🐢 Velocidad de la animación <output></output>
+        <input type="range" id="speed" min="0.1" max="2" step="0.05" value="0.3" data-unit="×"></label>
+    </div>
+    <small>Los cambios en los sliders se aplican desde la próxima ronda. El ping es de ida y vuelta (RTT).</small>
+  </section>
+
+  <!-- Escena -->
+  <section class="panel">
+    <h2>Red en vivo</h2>
+    <canvas id="scene" width="900" height="350"></canvas>
+    <small>⚪ el servidor publica el ítem · 🟦🟨🟩 cada jugador envía su acción · 🟡 ganador · 🔴 perdedor / tarde</small>
+  </section>
+
+  <section class="panel">
+    <h2>Línea de tiempo de la ronda</h2>
+    <canvas id="timeline" width="900" height="225"></canvas>
+  </section>
+
+  <!-- Resultados -->
+  <section class="panel">
+    <h2>Resultados acumulados</h2>
+    <p class="hint">La línea punteada marca el reparto justo (33 %): si los tres jugadores son igual de hábiles, cada uno debería ganar un tercio de las rondas.</p>
+    <div id="stats"></div>
+    <h2>Bitácora del servidor</h2>
+    <ul id="log"></ul>
+  </section>
+
+  <details class="panel">
+    <summary>¿Qué estoy viendo?</summary>
+    <ul>
+      <li><b>Latencia:</b> el ítem tarda ½ ping en llegar a cada jugador y su acción tarda otro ½ ping en volver.</li>
+      <li><b>Concurrencia:</b> tres acciones compiten por el mismo ítem en el mismo instante.</li>
+      <li><b>Consistencia:</b> el servidor autoritativo es el único que decide, así todos ven el mismo resultado.</li>
+      <li><b>FIFO:</b> gana el primer paquete que llega. Quien tiene mejor conexión gana aunque reaccione más lento.</li>
+      <li><b>Ventana de equidad:</b> el servidor espera unos ms, descuenta el ping medido de cada jugador y premia a quien realmente apretó primero. Costo: todos esperan el veredicto, y quien supere la ventana llega tarde.</li>
+    </ul>
+  </details>
+</main>
+
+<script>
+// motor.js — lógica pura de la simulación (sin DOM), para poder probarla en Node.
+
+const PLAYERS = [
+  { id: 'pc',  name: 'PC',      icon: '💻', color: '#4cc9f0' },
+  { id: 'con', name: 'Consola', icon: '🎮', color: '#f9c74f' },
+  { id: 'mov', name: 'Móvil',   icon: '📱', color: '#90be6d' },
+];
+
+const rand = (a, b) => a + Math.random() * (b - a);
+// Reacción humana ~200 ms (promedio de dos uniformes: más realista que una sola)
+const reaction = () => (rand(160, 240) + rand(160, 240)) / 2;
+
+// Tiempos de una ronda. t = 0: el servidor publica el ítem.
+function newRound(cfg) {
+  return PLAYERS.map(p => {
+    const oneWay = cfg.ping[p.id] / 2;                                   // ping = ida y vuelta (RTT)
+    const down  = Math.max(1, oneWay + rand(-cfg.jitter, cfg.jitter));  // servidor → cliente
+    const react = reaction();                                            // el jugador ve el ítem y reacciona
+    const up    = Math.max(1, oneWay + rand(-cfg.jitter, cfg.jitter));  // cliente → servidor
+    return { id: p.id, down, react, up, see: down, click: down + react, arrive: down + react + up };
+  });
+}
+
+// El servidor autoritativo decide quién agarra el ítem.
+function resolve(round, cfg) {
+  const fifo = cfg.mode === 'fifo';
+  const first = Math.min(...round.map(r => r.arrive));
+  const decideAt = fifo ? first : first + cfg.ventana;          // comp: espera la ventana de equidad
+  const valid = round.filter(r => r.arrive <= decideAt);         // fifo: solo el primero; comp: los que llegaron a tiempo
+  // fifo ordena por llegada; comp resta el ping medido para estimar CUÁNDO apretó cada jugador
+  const key = r => (fifo ? r.arrive : r.arrive - cfg.ping[r.id]);
+  const winner = valid.reduce((a, b) => (key(b) < key(a) ? b : a));
+  const fastest = round.reduce((a, b) => (b.react < a.react ? b : a)); // el realmente más rápido
+  return {
+    winner: winner.id, fastest: fastest.id, first, decideAt,
+    late: fifo ? [] : round.filter(r => !valid.includes(r)).map(r => r.id),
+    fair: winner.id === fastest.id,
+  };
+}
+
+if (typeof module !== 'undefined') module.exports = { PLAYERS, newRound, resolve };
+
+// app.js — interfaz: sliders, animación en canvas, estadísticas. Usa PLAYERS/newRound/resolve de motor.js.
+
+const $ = id => document.getElementById(id);
+const BY = Object.fromEntries(PLAYERS.map(p => [p.id, p]));
+const sc = $('scene').getContext('2d');
+const tl = $('timeline').getContext('2d');
+
+// ---------- Estado ----------
+const SERVER = { x: 450, y: 160 };
+const POS = { pc: { x: 110, y: 70 }, con: { x: 110, y: 250 }, mov: { x: 790, y: 160 } };
+const PHASE = { down: '#5aa9e6', react: '#f4a259', up: '#7bd88f' };
+const stats = { rounds: 0, wins: { pc: 0, con: 0, mov: 0 }, late: 0, verdict: 0, fair: 0 };
+let running = false, cfg, round, res;
+let t = 0, endT = 0, scaleT = 500, last = 0, holdUntil = 0; // t = reloj virtual de la ronda (ms)
+
+// ---------- Configuración desde los sliders ----------
+const val = id => +$(id).value;
+const readCfg = () => ({
+  ping: { pc: val('ping-pc'), con: val('ping-con'), mov: val('ping-mov') },
+  jitter: val('jitter'),
+  ventana: val('ventana'),
+  mode: document.querySelector('input[name=mode]:checked').value,
+});
+
+// ---------- Utilidades de dibujo ----------
+const lerp = (a, b, f) => ({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f });
+function txt(c, s, x, y, font = '13px system-ui', color = '#e8ecf8', align = 'center') {
+  c.font = font; c.fillStyle = color; c.textAlign = align; c.fillText(s, x, y);
+}
+function dot(pt, color) {
+  sc.beginPath(); sc.arc(pt.x, pt.y, 7, 0, Math.PI * 2); sc.fillStyle = color; sc.fill();
+}
+
+// ---------- Escena: servidor, clientes y paquetes ----------
+function drawScene() {
+  const c = cfg || readCfg(), on = !!round;
+  sc.clearRect(0, 0, 900, 350);
+
+  // enlaces con su ping
+  PLAYERS.forEach(p => {
+    const P = POS[p.id], m = lerp(SERVER, P, 0.5);
+    sc.strokeStyle = '#33415c'; sc.lineWidth = 2; sc.setLineDash([6, 6]);
+    sc.beginPath(); sc.moveTo(SERVER.x, SERVER.y); sc.lineTo(P.x, P.y); sc.stroke(); sc.setLineDash([]);
+    txt(sc, `ping ${c.ping[p.id]} ms`, m.x, m.y - 10, '12px system-ui', '#9aa7c7');
+  });
+
+  // servidor
+  sc.fillStyle = '#16213e'; sc.strokeStyle = '#7b61ff'; sc.lineWidth = 2;
+  sc.beginPath(); sc.roundRect(SERVER.x - 85, SERVER.y - 40, 170, 80, 12); sc.fill(); sc.stroke();
+  let status = 'En espera';
+  if (on) status = t < res.first ? '⭐ Ítem publicado' : t < res.decideAt ? '⏱️ Ventana abierta' : '⚖️ Veredicto emitido';
+  txt(sc, '🖥️ Servidor autoritativo', SERVER.x, SERVER.y - 10, 'bold 13px system-ui');
+  txt(sc, status, SERVER.x, SERVER.y + 10, '12px system-ui', '#9aa7c7');
+  if (on && c.mode === 'comp' && t > res.first) { // barra de la ventana de equidad
+    const f = c.ventana ? Math.min(1, (t - res.first) / c.ventana) : 1;
+    sc.fillStyle = '#ffd166'; sc.fillRect(SERVER.x - 70, SERVER.y + 22, 140 * f, 8);
+  }
+
+  // clientes
+  PLAYERS.forEach(p => {
+    const P = POS[p.id], r = on && round.find(x => x.id === p.id);
+    let state = '⏳ Esperando', col = '#9aa7c7', star = false;
+    if (on) {
+      const got = res.decideAt + c.ping[p.id] / 2; // cuándo le llega el veredicto
+      if (t >= got) {
+        [state, col] = p.id === res.winner ? ['🏆 ¡Ganó!', '#ffd166']
+          : res.late.includes(p.id) ? ['⌛ Llegó tarde', '#ef476f'] : ['❌ Perdió', '#ef476f'];
+      } else if (t >= r.click) state = '📤 Acción enviada';
+      else if (t >= r.see) state = '👀 ¡Reacciona!';
+      star = t >= r.see && t < got;
+    }
+    sc.beginPath(); sc.arc(P.x, P.y, 34, 0, Math.PI * 2); sc.fillStyle = '#16213e'; sc.fill();
+    sc.strokeStyle = p.color; sc.lineWidth = 3; sc.stroke();
+    txt(sc, p.icon, P.x, P.y + 11, '32px system-ui');
+    txt(sc, p.name, P.x, P.y + 56, 'bold 14px system-ui', p.color);
+    txt(sc, state, P.x, P.y + 74, '13px system-ui', col);
+    if (star) txt(sc, '⭐', P.x + 40, P.y - 22, '24px system-ui');
+  });
+
+  // paquetes en tránsito (posición = progreso del tiempo virtual sobre el enlace)
+  if (on) round.forEach(r => {
+    const P = POS[r.id], back = c.ping[r.id] / 2;
+    if (t < r.down) dot(lerp(SERVER, P, t / r.down), '#ffffff');                               // ítem
+    if (t >= r.click && t < r.arrive) dot(lerp(P, SERVER, (t - r.click) / r.up), BY[r.id].color); // acción
+    if (t >= res.decideAt && t < res.decideAt + back)                                           // veredicto
+      dot(lerp(SERVER, P, (t - res.decideAt) / back), r.id === res.winner ? '#ffd166' : '#ef476f');
+  });
+}
+
+// ---------- Línea de tiempo: dónde se va el tiempo de cada jugador ----------
+function drawTimeline() {
+  tl.clearRect(0, 0, 900, 225);
+  [['bajada (servidor → cliente)', PHASE.down], ['reacción humana', PHASE.react], ['subida (cliente → servidor)', PHASE.up]]
+    .forEach(([s, col], i) => {
+      tl.fillStyle = col; tl.fillRect(100 + i * 230, 8, 12, 12);
+      txt(tl, s, 118 + i * 230, 18, '12px system-ui', '#e8ecf8', 'left');
+    });
+  if (!round) return txt(tl, 'Pulsa Iniciar para ver la línea de tiempo de cada ronda', 450, 110, '14px system-ui', '#9aa7c7');
+
+  const X0 = 100, X1 = 880, x = ms => X0 + (X1 - X0) * ms / scaleT;
+  for (let ms = 0; ms <= scaleT; ms += 100) { // grilla
+    tl.strokeStyle = '#1f2a48'; tl.lineWidth = 1; tl.beginPath(); tl.moveTo(x(ms), 40); tl.lineTo(x(ms), 200); tl.stroke();
+    txt(tl, ms + ' ms', x(ms), 216, '11px system-ui', '#9aa7c7');
+  }
+  if (cfg.mode === 'comp' && t > res.first) { // ventana de equidad sombreada
+    tl.fillStyle = 'rgba(255,209,102,.15)';
+    tl.fillRect(x(res.first), 40, x(Math.min(t, res.decideAt)) - x(res.first), 160);
+  }
+  const seg = (y, a, b, color) => { // tramo [a,b] recortado al tiempo actual
+    if (t > a) { tl.fillStyle = color; tl.fillRect(x(a), y, x(Math.min(b, t)) - x(a), 24); }
+  };
+  PLAYERS.forEach((p, i) => {
+    const y = 52 + i * 50, r = round.find(q => q.id === p.id);
+    txt(tl, `${p.icon} ${p.name}`, X0 - 10, y + 17, '13px system-ui', p.color, 'right');
+    seg(y, 0, r.see, PHASE.down); seg(y, r.see, r.click, PHASE.react); seg(y, r.click, r.arrive, PHASE.up);
+    if (t >= r.arrive) {
+      if (res.late.includes(p.id)) txt(tl, '⌛', x(r.arrive) + 14, y + 18, '16px system-ui');
+      else if (t >= res.decideAt && p.id === res.winner) txt(tl, '🏆', x(r.arrive) + 14, y + 18, '18px system-ui');
+    }
+  });
+  if (t >= res.decideAt) { // línea de veredicto
+    tl.strokeStyle = '#ffd166'; tl.lineWidth = 2; tl.setLineDash([5, 4]);
+    tl.beginPath(); tl.moveTo(x(res.decideAt), 40); tl.lineTo(x(res.decideAt), 200); tl.stroke(); tl.setLineDash([]);
+    txt(tl, 'veredicto', x(res.decideAt), 36, '11px system-ui', '#ffd166');
+  }
+}
+
+// ---------- Estadísticas y bitácora ----------
+function record(r) {
+  stats.rounds++; stats.wins[r.winner]++; stats.late += r.late.length; stats.verdict += r.decideAt; stats.fair += +r.fair;
+}
+
+function renderStats() {
+  const n = stats.rounds;
+  $('stats').innerHTML = PLAYERS.map(p => {
+    const pct = n ? stats.wins[p.id] / n * 100 : 0;
+    return `<div class="row"><span>${p.icon} ${p.name}</span>
+      <div class="track"><div class="fill" style="width:${pct}%;background:${p.color}"></div><i class="fair"></i></div>
+      <b>${pct.toFixed(1)}%</b></div>`;
+  }).join('') + `<p class="sum">Rondas: <b>${n}</b> · Paquetes tardíos: <b>${stats.late}</b> ·
+    Veredicto promedio: <b>${n ? (stats.verdict / n).toFixed(0) : 0} ms</b> ·
+    Justicia (ganó quien reaccionó primero): <b>${n ? (stats.fair / n * 100).toFixed(1) : 0}%</b></p>`;
+}
+
+function finishRound() {
+  record(res);
+  const w = BY[res.winner], best = BY[res.fastest], r = round.find(q => q.id === res.winner);
+  const li = document.createElement('li');
+  li.textContent = `#${stats.rounds} ${w.icon} ${w.name} agarra el ítem (llegó a los ${r.arrive.toFixed(0)} ms)` +
+    (res.fair ? ' · ✅ justo' : ` · ⚠️ injusto: ${best.icon} ${best.name} reaccionó primero`) +
+    (res.late.length ? ` · ⌛ tarde: ${res.late.map(i => BY[i].icon).join(' ')}` : '');
+  $('log').prepend(li);
+  while ($('log').children.length > 8) $('log').lastChild.remove();
+  renderStats();
+}
+
+function resetStats() {
+  Object.assign(stats, { rounds: 0, late: 0, verdict: 0, fair: 0, wins: { pc: 0, con: 0, mov: 0 } });
+  $('log').replaceChildren();
+  renderStats();
+}
+
+function batch(n = 1000) { // mismas funciones del motor, sin animación
+  resetStats();
+  const c = readCfg();
+  for (let i = 0; i < n; i++) record(resolve(newRound(c), c));
+  renderStats();
+}
+
+// ---------- Rondas y bucle de animación ----------
+function startRound() {
+  cfg = readCfg(); round = newRound(cfg); res = resolve(round, cfg); t = 0;
+  endT = Math.max(...round.map(r => res.decideAt + cfg.ping[r.id] / 2)) + 150;
+  scaleT = Math.max(500, Math.ceil((Math.max(res.decideAt, ...round.map(r => r.arrive)) + 40) / 100) * 100);
+}
+
+function frame(now) {
+  const dt = Math.min(now - last, 50); last = now;
+  if (running) {
+    if (!round || (t >= endT && now >= holdUntil)) startRound();
+    else if (t < endT) {
+      t = Math.min(endT, t + dt * $('speed').value);
+      if (t >= endT) { finishRound(); holdUntil = now + 1200; }
+    }
+  }
+  drawScene(); drawTimeline();
+  requestAnimationFrame(frame);
+}
+
+// ---------- Eventos ----------
+const syncMode = () => { $('ventana').disabled = readCfg().mode === 'fifo'; };
+
+document.querySelectorAll('input[type=range]').forEach(i => {
+  const show = () => { i.parentElement.querySelector('output').textContent = i.value + ' ' + i.dataset.unit; };
+  i.addEventListener('input', show); show();
+});
+document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', syncMode));
+$('btnStart').onclick = () => { running = !running; $('btnStart').textContent = running ? '⏸ Pausar' : '▶ Iniciar'; };
+$('btnBatch').onclick = () => batch(1000);
+$('btnReset').onclick = resetStats;
+
+syncMode(); renderStats(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
